@@ -1,0 +1,37 @@
+#!/bin/bash
+
+export PATH=/u01/mongo/mongodb-linux-x86_64-rhel70-4.2.8/bin:$PATH
+
+export MONGO_HOME=/u01/mongo/mongodb-linux-x86_64-rhel70-4.2.8
+
+export LOG_FILE="/home/mongo/STARTUP_LOG.txt"
+
+cd /u01/mongo/mongodb-linux-x86_64-rhel70-4.2.8/bin
+
+echo "===========Starting Database========" > $LOG_FILE
+echo " " >> $LOG_FILE
+echo " " >> $LOG_FILE
+
+./mongod -f /u01/DATA/appdb/mongod.conf >> $LOG_FILE
+
+echo  " "  >> $LOG_FILE
+echo  " "  >> $LOG_FILE
+echo "-------checking database status ------" >> $LOG_FILE
+
+echo  " " >> $LOG_FILE
+echo  " " >> $LOG_FILE
+
+if [ `ps -ef | grep -i mongod.conf | wc -l` -le 1 ]; then
+    echo "mongodb not running" >> $LOG_FILE
+    exit 1
+else
+    echo "database started successfully" >> $LOG_FILE
+fi
+
+echo "=======checking connectivity of database======" >> $LOG_FILE
+echo " ">> $LOG_FILE
+echo " ">> $LOG_FILE
+./mongo -u admin -p Admin1234 < /home/mongo/test.js  >> $LOG_FILE
+
+exit
+
