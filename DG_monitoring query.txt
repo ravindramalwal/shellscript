@@ -1,0 +1,404 @@
+
+DGMGRL> show database 'PRIMDB'
+DGMGRL > show database 'STYDB'
+DGMGRL> show database verbose 'PRIMDB'
+DGMGRL>show database PRIMDB statusreport
+DGMGRL>show configuration
+DGMGRL>show database 
+DGMGRL> validate database verbose orcl
+
+======================check database details ========================
+set underline off
+select RPAD('DB_NAME',20,' ')||': '|| NAME ||chr(10)||
+RPAD('DB_MODE',20,' ')||': '|| OPEN_MODE ||chr(10)||
+RPAD('DB_ROLE',20,' ')||': '|| DATABASE_ROLE ||chr(10)||
+RPAD('DB_SWITCHOVER_STATUS',20,' ')||': '|| SWITCHOVER_STATUS ||chr(10)||
+RPAD('DG_BROKER_STATUS',20,' ')||': '|| DATAGUARD_BROKER ||chr(10)||
+RPAD('PROTECTION_MODE',20,' ')||': '|| PROTECTION_MODE ||chr(10)||
+RPAD('GUARD_STATUS',20,' ')||': '|| GUARD_STATUS as "======= DB_DG_STATUS ======= "
+from v$database;
+
+
+select A.
+
+==============Monitoring query======================================
+
+:-Test Log Transport
+
+ALTER SESSION SET nls_date_format='DD-MON-YYYY HH24:MI:SS';
+
+SELECT sequence#, first_time, next_time
+FROM   v$archived_log
+ORDER BY sequence#;
+
+select MESSAGE from V$DATAGUARD_STATUS;                 /* to check all procee status */
+
+SELECT protection_mode FROM v$database;
+
+PROTECTION_MODE
+--------------------
+MAXIMUM PERFORMANCE
+
+SQL>
+
+select MAX (SEQUENCE#), APPLIED FROM V$ARCHIVED_LOG where APPLIED ='YES' GROUP BY APPLIED;
+
+select max (sequence#) current_seq from v$log;
+
+MRP process status query....
+
+select process,client_process,status,thread#,sequence#,block#,blocks from v$managed_standby;
+
+set linesize 400
+col Values for a65
+col Recover_start for a21
+select to_char(START_TIME,'dd.mm.yyyy hh24:mi:ss') "Recover_start",to_char(item)||' = '||to_char(sofar)||' '||to_char(units)||' '|| to_char(TIMESTAMP,'dd.mm.yyyy hh24:mi') "Values" from v$recovery_progress where start_time=(select max(start_time) from v$recovery_progress);
+
+=========log file Destination ==========
+set lines 200
+column member format a80
+select a.group#, a.status, a.bytes/1024/1024 SizeMB, b.member
+from v$log a, v$logfile b where a.group#=b.group# order by group#;
+
+=================================================================
+============================Switch Over Commands ============================
+
+
+---->to check database status 
+select name, open_mode, db_unique_name, database_role from
+v$database; (On Primary and Secondary)
+
+---> To_check Dataguard lag 
+
+select NAME,VALUE,DATUM_TIME from v$dataguard_stats; (On Secondary)
+select STATUS, GAP_STATUS from V$ARCHIVE_DEST_STATUS where DEST_ID = 2;(primary Database)
+ 
+----> Covert Primary to Stand_by 
+select SWITCHOVER_STATUS from V$DATABASE;
+alter database commit to switchover to physical standby with session shutdown;
+startup mount;
+
+----> Convert Standby to primary 
+SQL> select SWITCHOVER_STATUS from V$DATABASE;
+SQL> alter database commit to switchover to primary with session shutdown;
+SQL> alter database open;
+
+---> Start MPR prcoess on stand by server 
+
+alter database recover managed standby database disconnect;
+
+----> Validation 
+
+select process, status, sequence# from v$managed_standby; (On Secondary)
+set lines 1000
+set pages 1000
+column applied format a10
+column first_time format a10
+column next_time format a10
+column filename format a40
+select sequence#, applied, first_time, next_time, name filename from v$archived_log sequence# desc ; (On Secondary)
+
+
+
+
+select sequence#, first_time, next_time, applied, archived from v$archived_log where name = 'DB12C_STB' order by first_time;(on primary)
+
+ALTER SESSION SET nls_date_format='DD-MON-YYYY HH24:MI:SS'; (Both Side)
+
+SELECT sequence#, first_time, next_time
+FROM   v$archived_log
+ORDER BY sequence#;
+
+====================How to shut down the Both database=======================================
+Connect to standby 
+
+----> Connect primary 
+shutdown immediate;
+
+---> Stop MRP Process 
+alter database recover managed standby database cancel;
+shutdown immediate;
+
+==================How to start DG configuration====================================
+
+-----> On Primary Database 
+
+startup;
+
+-----> On Secondary Database 
+
+startup mount;
+
+--check if MRP process is running or not 
+select PROCESS,CLIENT_PROCESS,THREAD#,SEQUENCE#,BLOCK# from v$managed_standby where process = 'MRP0' or client_process='LGWR';
+select process, status, sequence# from v$managed_standby where process in ('MRP0','RFS');
+
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE DISCONNECT FROM SESSION;
+
+==============Lag check query ==========================================
+SELECT al.thrd "Thread", almax "Last Seq Received", lhmax "Last Seq Applied" FROM
+(select thread# thrd, MAX(sequence#) almax FROM v$archived_log WHERE resetlogs_change#=(SELECT resetlogs_change#
+FROM v$database) GROUP BY thread#) al, (SELECT thread# thrd, MAX(sequence#) lhmax FROM v$log_history
+WHERE resetlogs_change#=(SELECT resetlogs_change# FROM v$database) GROUP BY thread#) lh WHERE al.thrd = lh.thrd;
+
+===============switch  over activity =================================
+DGMGRL> show configuration
+DGMGRL> SWITCHOVER TO 'orcl_stby';
+==================Manually Failover ======================================
+
+--> Stop primary server 
+
+--> make secondary server as primary 
+
+alter database recover managed standby database cancel;
+
+alter database recover managed standby database finish;
+
+select SWITCHOVER_STATUS from V$DATABASE;
+
+alter database commit to switchover to primary with session
+shutdown;
+
+alter database open;
+
+*** SQL>  select SWITCHOVER_STATUS from V$DATABASE;
+
+SWITCHOVER_STATUS
+--------------------
+FAILED DESTINATION
+
+===================Rebuild(re-instate) the Failed Primary============================
+
+---Get the SCN when standby become primary, you get this STANDBY_BECAME_PRIMARY_SCN column from v$database 
+ 
+select to_char(STANDBY_BECAME_PRIMARY_SCN) from v$database;
+
+---> After primary server up 
+
+>lsnrctl start 
+ 
+-- startup mount 
+
+--> flash badatabase using SCN STANDBY_BECAME_PRIMARY_SCN
+
+flashback database to scn 2456927;
+
+--> convert the database into physical standby 
+
+alter database convert to physical standby;
+
+--> shutdown  database and start in mount mode and start MRP process
+
+shutdown immediate;
+
+startup mount;
+
+alter database recover managed standby database disconnect;
+
+==========================Convert Snapshot standby/Active Data Guard=============================================================
+
+--- check current status of standby database 
+ 
+select name, open_mode, db_unique_name, database_role from
+v$database;
+SELECT flashback_on FROM v$database;
+
+--- Stop MRP process 
+
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE CANCEL;
+
+select process, status, sequence# from v$managed_standby where process in ('MRP0','RFS');
+
+-- covert database into snapshot standby
+
+ALTER DATABASE CONVERT TO SNAPSHOT STANDBY;
+
+ALTER DATABASE OPEN;
+
+select name, open_mode, db_unique_name, database_role from
+v$database;
+
+SELECT flashback_on FROM v$database;
+
+----- perform some operation 
+insert,update,delete 
+
+---- convert snapshot database to physical standby 
+
+check the restore point first (note: while your are performing snapshot database oracle will create restore point internally)
+
+desc v$restore_point;
+
+ SHUTDOWN IMMEDIATE;
+STARTUP MOUNT;
+ALTER DATABASE CONVERT TO PHYSICAL STANDBY;
+SHUTDOWN IMMEDIATE;
+STARTUP NOMOUNT;
+ALTER DATABASE MOUNT STANDBY DATABASE;
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE DISCONNECT;
+SELECT flashback_on FROM v$database;
+
+validation 
+select process, status, sequence# from v$managed_standby where process in ('MRP0','RFS');
+
+=====================Convert into active database ================
+
+Note: in active data gaurd you can not create table ans user you can just query on database.
+
+--- stop MRP prcoess 
+select name, open_mode, db_unique_name, database_role from
+v$database;
+
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE CANCEL;
+
+alter database open 
+
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE DISCONNECT FROM SESSION;
+
+select name, open_mode, db_unique_name, database_role from
+v$database;
+
+------Backup to physical standby mode 
+
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE CANCEL;
+
+shutdown immediate;
+
+startup mount;
+
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE DISCONNECT FROM SESSION;
+
+=========================================================================
+
+
+==========================DG Broker setup =======================================================
+
+--> connect database using dgmgrl 
+[oracle@DB12C ~]$ dgmgrl sys@DB12C
+DGMGRL for Linux: Release 12.2.0.1.0 - Production on Sun Aug 22 14:50:02 2021
+
+Copyright (c) 1982, 2017, Oracle and/or its affiliates.  All rights reserved.
+
+Welcome to DGMGRL, type "help" for information.
+Password:
+Connected to "DB12C"
+Connected as SYSDBA.
+DGMGRL>
+
+create configuration my_dg as primary database is DB12C connect identifier is DB12C;
+
+add database DB12C_STB as connect identifier is DB12C_STB;
+
+
+---Stop and start MRP process using DGMGRL 
+
+edit database DB12C_STB set state=APPLY-ON;
+
+edit database DB12C_STB set state=APPLY-OFF;
+
+
+---- stop and start log from primary to standby 
+
+edit database DB12C set state=TRANSPORT-ON;
+
+edit database DB12C set state=TRANSPORT-OFF;
+
+=======================switch over using DGMGRL =============
+switch to the secondary database.
+
+switchover to DB12C_STB;
+show configuration;
+
+switch back to primary Database
+
+switchover to DB12C;
+show configuration;
+
+==================================Fail over using DGMGRL==================================================
+Phase-I From standby side
+
+dgmgrl sys/****@DB12C_DR
+
+DGMGRL> show DB12C
+DGMGRL> show DB12C_DR
+DGMGRL> show configuration;
+DGMGRL> FAILOVER TO DB12C_DR;
+Performing failover NOW, please wait...
+Failover succeeded, new primary is "DB12C_DR"
+DGMGRL> show configuration;
+
+Phase-II  reinstate Primary database
+-->On current primary (DB12C_DR):
+
+dgmgrl sys/****@DB12C_DR
+
+DGMGRL> show configuration;
+DGMGRL> reinstate database DB12C;
+
+Phase-III to check the failed primary database status
+On failed primary (DB12C):
+===========================
+sqlplus / as sysdba
+SQL> select name,open_mode from v$database;
+SQL> select process, status, sequence# from v$managed_standby;
+
+PHASE-III switch over to old primary database 
+
+----> On current primary (proddb_st):
+
+dgmgrl sys/sys@DB12_DR
+DGMGRL> switchover to DB12C;
+
+==================== FSFO configuration ===============
+Note: always configure FSFO to standby server or third server 
+
+ connect to standby server using dgmgrl 
+
+[oracle@DB12C ~]$ dgmgrl sys@DB12C_STB
+
+DGMGRL> show configuration;
+
+DGMGRL> show fast_start failover;     --- check FSFO Status 
+
+DGMGRL> ENABLE FAST_START FAILOVER;
+Enabled.
+
+DGMGRL> show configuration;
+
+Note: let switch some log files .
+
+===================How start/stop  database in FSFO configuration =========
+
+ shutdown primary data;
+ shutdown standby database;
+ 
+===========================How to convert physical standby to logical standby ========================
+
+
+ ===========================================================================
+ 
+ RMAN> run
+{
+allocate channel p1 type disk;
+allocate channel p2 type disk;
+allocate channel p3 type disk;
+allocate channel p4 type disk;
+allocate auxiliary channel s1 type disk;
+duplicate target database for standby from active database
+spfile
+parameter_value_convert ‘prime’,’stand’
+
+set db_name=’prime’
+set db_unique_name=’stand’
+set db_file_name_convert=’/u01/app/oracle/oradata/PRIME/datafile/’,’/u01/app/oracle/oradata/STAND/datafile/’
+set log_file_name_convert=’/u01/app/oracle/oradata/PRIME/onlinelog/’,’/u01/app/oracle/oradata/STAND/onlinelog/’
+set control_files=’/u01/app/oracle/oradata/STAND/onlinelog/standby1.ctl’
+set log_archive_max_processes=’5′
+set fal_client=’stand’
+set fal_server=’prime’
+set standby_file_management=’AUTO’
+set log_archive_config=’dg_config=(prime,stand)’
+set compatible=’12.1.0.2.0′
+set memory_target=’500m’
+nofilenamecheck;
+}
